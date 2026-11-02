@@ -1,0 +1,123 @@
+"""
+Accuracy check for the Olist Streamlit dashboard.
+
+Recomputes every KPI card straight from the raw data files (no app.py code used)
+and compares them with the values the dashboard shows.
+
+Run:  python check_accuracy.py
+"""
+from pathlib import Path
+
+import pandas as pd
+
+D = Path(__file__).parent / "data"
+o = pd.read_parquet(D / "orders.parquet")
+oi = pd.read_parquet(D / "order_items.parquet")
+p = pd.read_parquet(D / "payments.parquet")
+
+for c in ["is_sales_order", "valid_delivery", "is_late", "review_score",
+          "delivery_days", "estimated_days", "delay_days", "item_sales"]:
+    o[c] = o[c].astype("float64")
+for c in ["price", "freight_value"]:
+    oi[c] = oi[c].astype("float64")
+for c in ["payment_value", "payment_installments"]:
+    p[c] = p[c].astype("float64")
+
+
+def kpis(year=None, state=None):
+    O = o
+    if year:
+        O = O[O["purchase_date"].dt.year == year]
+    if state:
+        O = O[O["customer_state"] == state]
+    OI = oi[oi["order_id"].isin(O["order_id"])]
+    P = p[p["order_id"].isin(O["order_id"])]
+    S = O[O["is_sales_order"] == 1]
+    OIs = OI[OI["order_id"].isin(S["order_id"])]
+    V = O[O["valid_delivery"] == 1]
+    r = O["review_score"].dropna()
+    n = O.groupby("customer_unique_id")["order_id"].nunique()
+    sales = OIs["price"].sum()
+    total_pay = P["payment_value"].sum()
+    return {
+        "Orders (valid)": S["order_id"].nunique(),
+        "Item Sales": sales,
+        "Unique Customers": O["customer_unique_id"].nunique(),
+        "Active Sellers": OIs["seller_id"].nunique(),
+        "Avg Review Score": r.mean(),
+        "Items Sold": len(OIs),
+        "Avg Item Price": sales / len(OIs),
+        "Avg Freight per Item": OIs["freight_value"].sum() / len(OIs),
+        "Freight Share %": OIs["freight_value"].sum() / sales * 100,
+        "Repeat Customer Rate %": (n > 1).mean() * 100,
+        "% 4-5 Star": (r >= 4).mean() * 100,
+        "% 1-2 Star": (r <= 2).mean() * 100,
+        "Avg Delivery Days": V["delivery_days"].mean(),
+        "Avg Estimated Days": V["estimated_days"].mean(),
+        "Late Delivery %": (O["is_late"] == 1).sum() / len(V) * 100,
+        "On-time Delivery %": 100 - (O["is_late"] == 1).sum() / len(V) * 100,
+        "Avg Delay (late orders)": O.loc[O["is_late"] == 1, "delay_days"].mean(),
+        "Payment Total": total_pay,
+        "Avg Payment per Order": total_pay / P["order_id"].nunique(),
+        "Credit Card Share %": P.loc[P["payment_type"] == "credit_card", "payment_value"].sum() / total_pay * 100,
+        "Avg Instalments": P["payment_installments"].mean(),
+        "Cities Served": O["customer_city"].nunique(),
+    }
+
+
+# Values the dashboard displays with NO filters (rounded to 2 decimals)
+EXPECTED_ALL = {
+    "Orders (valid)": 98199, "Item Sales": 13494400.74, "Unique Customers": 96096,
+    "Active Sellers": 3053, "Avg Review Score": 4.09, "Items Sold": 112101,
+    "Avg Item Price": 120.38, "Avg Freight per Item": 19.99, "Freight Share %": 16.61,
+    "Repeat Customer Rate %": 3.12, "% 4-5 Star": 77.05, "% 1-2 Star": 14.64,
+    "Avg Delivery Days": 12.56, "Avg Estimated Days": 23.74, "Late Delivery %": 8.11,
+    "On-time Delivery %": 91.89, "Avg Delay (late orders)": 9.55,
+    "Payment Total": 16008872.12, "Avg Payment per Order": 160.99,
+    "Credit Card Share %": 78.34, "Avg Instalments": 2.85, "Cities Served": 4119,
+}
+# Values the dashboard shows with Year = 2017 on the Executive page
+EXPECTED_2017 = {"Orders (valid)": 44375, "Unique Customers": 43713,
+                 "Active Sellers": 1766, "Avg Review Score": 4.09}
+
+
+def accuracy_pct(act, exp):
+    """100% = exact match. Drops by the % error: 100 - |actual - expected| / |expected| * 100."""
+    if exp == 0:
+        return 100.0 if act == 0 else 0.0
+    return max(0.0, 100 - abs(act - exp) / abs(exp) * 100)
+
+
+ALL_SCORES = []
+
+
+def run(title, actual, expected):
+    print(f"\n{title}")
+    print(f"{'KPI':26}{'Raw data':>16}{'Dashboard':>16}{'Accuracy %':>12}  Result")
+    print("-" * 78)
+    scores = []
+    for k, exp in expected.items():
+        act = round(float(actual[k]), 2)
+        acc = accuracy_pct(act, exp)
+        ok = abs(act - exp) < 0.011
+        scores.append(acc)
+        ALL_SCORES.append((acc, ok))
+        print(f"{k:26}{act:>16,.2f}{exp:>16,.2f}{acc:>11.2f}%  {'PASS' if ok else 'FAIL'}")
+    print("-" * 78)
+    print(f"{'Section accuracy (average)':58}{sum(scores) / len(scores):>7.2f}%")
+    return sum(1 for a in scores if a < 99.995)
+
+
+fails = run("1) No filters", kpis(), EXPECTED_ALL)
+fails += run("2) Year = 2017", kpis(year=2017), EXPECTED_2017)
+
+print("\nExtra: Item Sales with Year = 2017 (dashboard shows 6.11M):",
+      f"{kpis(year=2017)['Item Sales']:,.2f}")
+print("Extra: State = SP ->", {k: round(float(v), 2) for k, v in kpis(state='SP').items()
+                               if k in ('Orders (valid)', 'Item Sales', 'Unique Customers')})
+overall = sum(a for a, _ in ALL_SCORES) / len(ALL_SCORES)
+passed = sum(1 for _, ok in ALL_SCORES if ok)
+print("\n" + "=" * 78)
+print(f"OVERALL ACCURACY : {overall:.2f}%")
+print(f"CHECKS PASSED    : {passed} of {len(ALL_SCORES)} ({passed / len(ALL_SCORES) * 100:.1f}%)")
+print("=" * 78)
