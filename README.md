@@ -8,16 +8,6 @@ End-to-end analysis of the Brazilian E-Commerce Public Dataset by Olist, coverin
 ## Project Objective
 Analyze orders, revenue, customers, payments, and delivery performance to find sales trends and the factors behind them.
 
-## Dashboard Preview
-
-
-![Dashboard](images/dashboard.png)
-
-
-
-## Power BI Dashboard
-- Template file: [Olist-Dashboard.pbit](Olist-Dashboard.pbit)
-- Full file with data: [Download from Google Drive](PASTE-YOUR-DRIVE-LINK-HERE)
 
 
 ## Key Questions
